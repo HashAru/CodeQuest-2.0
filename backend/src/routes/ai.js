@@ -1,328 +1,3 @@
-// // backend/src/routes/ai.js
-// import express from 'express';
-// import dotenv from 'dotenv';
-// dotenv.config();
-
-// import Conversation from '../models/Conversation.js';
-// import auth from '../middleware/auth.js';
-
-// const router = express.Router();
-
-// // Configuration from .env
-// const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-// const GEMINI_MODEL = process.env.GEMINI_MODEL || 'models/gemini-2.0-flash';
-// const GEMINI_BASE = process.env.GEMINI_BASE || 'https://generativelanguage.googleapis.com/v1beta';
-
-// /**
-//  * Attempt to initialize the official Gemini SDK client if available.
-//  * If SDK is not installed, we'll fall back to a REST call.
-//  *
-//  * Note: Install the SDK if you prefer the SDK path:
-//  *   npm install @google/generative-ai
-//  */
-// let sdkClient = null;
-// try {
-//   // Attempt to import SDK (may throw if package not installed)
-//   // eslint-disable-next-line import/no-extraneous-dependencies, no-eval
-//   const { GoogleGenerativeAI } = await (async () => {
-//     try {
-//       return await import('@google/generative-ai');
-//     } catch (e) {
-//       return null;
-//     }
-//   })();
-
-//   if (GoogleGenerativeAI) {
-//     // SDK available — instantiate client
-//     // The SDK will use ADC if available; if you have an API key you can pass it to constructor if supported.
-//     // Some SDKs accept an API key or rely on ADC; we attempt to pass the key in options if provided.
-//     try {
-//       sdkClient = new GoogleGenerativeAI({ apiKey: GEMINI_KEY || undefined });
-//     } catch (e) {
-//       // If instantiation fails, keep sdkClient null and fallback to REST
-//       sdkClient = null;
-//       console.warn('Gemini SDK present but failed to initialize — will use REST fallback.');
-//     }
-//   }
-// } catch (err) {
-//   // ignore: SDK not present
-//   sdkClient = null;
-// }
-
-// /* -------------------------
-//    Helpers: prompt builder
-//    ------------------------- */
-// function messagesToPrompt(messages) {
-//   // Simple conversion: system/user/assistant to labeled blocks.
-//   // This is used for both SDK and REST fallbacks.
-//   return messages.map(m => `${(m.role || 'user').toUpperCase()}: ${m.content}`).join('\n\n');
-// }
-
-// /* -------------------------
-//    Helper: call Gemini via SDK (if available)
-//    ------------------------- */
-// async function callGeminiSdk(messages) {
-//   if (!sdkClient) {
-//     const e = new Error('Gemini SDK not available');
-//     e.isSdkMissing = true;
-//     throw e;
-//   }
-
-//   // Convert messages to a single prompt text for the SDK generate call.
-//   const promptText = messagesToPrompt(messages);
-
-//   // The SDK API differs across releases. We'll attempt a few common shapes.
-//   try {
-//     // Preferred shape used earlier in examples: getGenerativeModel + generateContent
-//     const model = sdkClient.getGenerativeModel
-//       ? sdkClient.getGenerativeModel({ model: GEMINI_MODEL })
-//       : sdkClient.model?.(GEMINI_MODEL) || sdkClient;
-
-//     // Attempt generateContent if supported
-//     if (model && typeof model.generateContent === 'function') {
-//       const resp = await model.generateContent({ text: promptText, temperature: 0.2 });
-//       // Many SDKs offer a convenient .text() accessor
-//       if (resp?.response?.text) return { raw: resp, text: resp.response.text() || resp?.response?.text };
-//       if (resp?.response?.content) return { raw: resp, text: resp.response.content?.toString?.() || String(resp.response.content) };
-//       // fallback: stringify whole response
-//       return { raw: resp, text: String(JSON.stringify(resp)).slice(0, 2000) };
-//     }
-
-//     // fallback attempt: generateText or simple generate call
-//     if (model && typeof model.generateText === 'function') {
-//       const resp = await model.generateText({ prompt: promptText, temperature: 0.2 });
-//       if (resp?.candidates && resp.candidates[0]) {
-//         const cand = resp.candidates[0];
-//         if (cand?.content?.parts) return { raw: resp, text: cand.content.parts.map(p => p.text || '').join('') };
-//         if (cand?.output) return { raw: resp, text: cand.output };
-//       }
-//       if (resp?.output) return { raw: resp, text: resp.output };
-//       return { raw: resp, text: String(JSON.stringify(resp)) };
-//     }
-
-//     // If SDK exists but we couldn't call the model, throw to let REST fallback try
-//     const err = new Error('SDK present but no supported generate method found');
-//     err.isSdkUnsupported = true;
-//     throw err;
-//   } catch (err) {
-//     // bubble up
-//     throw err;
-//   }
-// }
-
-// /* -------------------------
-//    Helper: call Gemini via REST (fallback)
-//    ------------------------- */
-// import axios from 'axios';
-
-// async function callGeminiRest(messages) {
-//   if (!GEMINI_KEY) {
-//     const e = new Error('GEMINI_API_KEY not configured on server');
-//     e.isConfig = true;
-//     throw e;
-//   }
-
-//   // Build a prompt text from messages
-//   const promptText = messages.map(m => `${(m.role || 'user').toUpperCase()}: ${m.content}`).join('\n\n');
-
-//   // payload matching the generateContent API shape
-//   const payload = {
-//     // use contents/parts shape — works with generateContent
-//     contents: [{ parts: [{ text: promptText }] }],
-//     temperature: 0.2,
-//     // maxOutputTokens: 1024
-//   };
-
-//   // We'll try each base (v1beta first, then v1beta2) with :generateContent
-//   // and log full response/error details for debugging.
-//   let lastError = null;
-//   for (const base of GEMINI_BASES) {
-//     const url = `${base}/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
-//     try {
-//       const r = await axios.post(url, payload, {
-//         headers: { 'Content-Type': 'application/json' },
-//         timeout: 120000
-//       });
-
-//       const data = r.data;
-//       // DEBUG: log the modelVersion once for visibility (optional)
-//       console.info('Gemini REST success from', url, 'modelVersion=', data?.modelVersion || data?.model || 'unknown');
-
-//       // Robust parse: candidates[].content.parts[].text
-//       let assistantText = '';
-
-//       if (Array.isArray(data?.candidates) && data.candidates.length > 0) {
-//         const cand = data.candidates[0];
-//         // new style: candidate.content.parts
-//         if (cand?.content?.parts && Array.isArray(cand.content.parts)) {
-//           assistantText = cand.content.parts.map(p => p.text || '').join('');
-//         }
-//         // alternate: candidate.content is an array of blocks
-//         else if (Array.isArray(cand.content)) {
-//           assistantText = cand.content.map(c => c?.text || '').join('');
-//         }
-//         // alternate: candidate.output string
-//         else if (typeof cand.output === 'string') {
-//           assistantText = cand.output;
-//         }
-//       }
-
-//       // fallback shapes
-//       if (!assistantText && typeof data?.output === 'string') assistantText = data.output;
-//       if (!assistantText && data?.generated_text) assistantText = data.generated_text;
-//       if (!assistantText && Array.isArray(data?.candidates) && data.candidates[0]?.content) {
-//         // try to stringify candidate content
-//         const c = data.candidates[0].content;
-//         if (typeof c === 'string') assistantText = c;
-//         else if (Array.isArray(c)) assistantText = c.map(x => x.text || '').join('');
-//       }
-
-//       assistantText = String(assistantText || '').trim();
-
-//       return { raw: data, text: assistantText };
-//     } catch (err) {
-//       // capture and log helpful info so we can see what the API returned
-//       const info = {
-//         message: err.message,
-//         isAxios: !!err.isAxiosError,
-//         status: err.response?.status,
-//         statusText: err.response?.statusText,
-//         headers: err.response?.headers,
-//         data: err.response?.data
-//       };
-//       console.error('Gemini REST attempt failed for URL:', url, '\n', JSON.stringify(info, null, 2));
-//       lastError = info;
-//       // continue to next base
-//     }
-//   }
-
-//   // If we reach here, all attempts failed
-//   const wrapper = new Error('All Gemini REST endpoints failed');
-//   wrapper.info = lastError;
-//   throw wrapper;
-// }
-
-// /* -------------------------
-//    Main route: POST /api/ai/chat
-//    ------------------------- */
-// /**
-//  * Request body:
-//  *   { conversationId?: string, message: string, title?: string }
-//  *
-//  * Response:
-//  *   200: { conversationId, assistant, conversation }
-//  */
-// router.post('/chat', auth, async (req, res) => {
-//   try {
-//     const userId = req.userId;
-//     const { conversationId, message, title } = req.body || {};
-
-//     if (!message || typeof message !== 'string') return res.status(400).json({ message: 'message required' });
-
-//     // Load or create conversation
-//     let conversation;
-//     if (conversationId) {
-//       conversation = await Conversation.findById(conversationId);
-//       if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
-//       if (String(conversation.user) !== String(userId)) return res.status(403).json({ message: 'Not your conversation' });
-//     } else {
-//       conversation = new Conversation({ user: userId, title: title || 'Study Plan', messages: [] });
-//     }
-
-//     // System prompt instructing academic persona
-//     const systemPrompt = `You are StudyBuddy — a friendly, enthusiastic, technically grounded study planner assistant.
-// Focus on academic study topics (programming, algorithms, data structures, interview prep, machine learning, math). Provide structured study plans, step-by-step guidance, estimated time, and practice recommendations.`;
-
-//     // Build messages array to pass to the model (system + last history + new user message)
-//     const messagesForModel = [
-//       { role: 'system', content: systemPrompt },
-//       ...conversation.messages.slice(-12).map(m => ({ role: m.role, content: m.content })),
-//       { role: 'user', content: message }
-//     ];
-
-//     // Save user message immediately
-//     conversation.messages.push({ role: 'user', content: message });
-//     await conversation.save();
-
-//     // Call model (prefer SDK, fallback to REST)
-//     let modelResp;
-//     try {
-//       if (sdkClient) {
-//         modelResp = await callGeminiSdk(messagesForModel);
-//       } else {
-//         modelResp = await callGeminiRest(messagesForModel);
-//       }
-//     } catch (err) {
-//       // return detailed error for debugging (non-sensitive)
-//       console.error('Gemini call error:', err?.info || err?.message || err);
-//       // if configuration error, return 500 with message
-//       if (err?.isConfig) return res.status(500).json({ message: err.message });
-//       return res.status(502).json({ message: 'Gemini API request failed', details: err?.info || err?.message || 'See server logs' });
-//     }
-
-//     const assistantText = modelResp?.text || 'Sorry, I could not produce a response.';
-//     conversation.messages.push({ role: 'assistant', content: assistantText });
-//     await conversation.save();
-
-//     return res.json({ conversationId: conversation._id, assistant: assistantText, conversation });
-//   } catch (err) {
-//     console.error('POST /api/ai/chat error:', err?.message || err);
-//     return res.status(500).json({ message: 'AI chat failed', details: err?.message || String(err) });
-//   }
-// });
-
-// /* -------------------------
-//    Conversations endpoints (list/get/rename/delete)
-//    ------------------------- */
-
-// router.get('/conversations', auth, async (req, res) => {
-//   try {
-//     const conversations = await Conversation.find({ user: req.userId }).sort({ updatedAt: -1 }).lean();
-//     return res.json(conversations);
-//   } catch (err) {
-//     console.error('GET /api/ai/conversations error', err);
-//     return res.status(500).json({ message: 'Failed to list conversations' });
-//   }
-// });
-
-// router.get('/conversations/:id', auth, async (req, res) => {
-//   try {
-//     const conv = await Conversation.findById(req.params.id).lean();
-//     if (!conv || String(conv.user) !== String(req.userId)) return res.status(404).json({ message: 'Not found' });
-//     return res.json(conv);
-//   } catch (err) {
-//     console.error('GET /api/ai/conversations/:id error', err);
-//     return res.status(500).json({ message: 'Failed to load conversation' });
-//   }
-// });
-
-// router.post('/conversations/:id/title', auth, async (req, res) => {
-//   try {
-//     const conv = await Conversation.findById(req.params.id);
-//     if (!conv || String(conv.user) !== String(req.userId)) return res.status(404).json({ message: 'Not found' });
-//     conv.title = req.body.title || conv.title;
-//     await conv.save();
-//     return res.json(conv);
-//   } catch (err) {
-//     console.error('POST /api/ai/conversations/:id/title error', err);
-//     return res.status(500).json({ message: 'Failed to rename' });
-//   }
-// });
-
-// router.delete('/conversations/:id', auth, async (req, res) => {
-//   try {
-//     const conv = await Conversation.findById(req.params.id);
-//     if (!conv || String(conv.user) !== String(req.userId)) return res.status(404).json({ message: 'Not found' });
-//     await conv.remove();
-//     return res.json({ success: true });
-//   } catch (err) {
-//     console.error('DELETE /api/ai/conversations/:id error', err);
-//     return res.status(500).json({ message: 'Failed to delete' });
-//   }
-// });
-
-// export default router;
-
 // backend/src/routes/ai.js
 import express from 'express';
 import dotenv from 'dotenv';
@@ -338,10 +13,10 @@ const router = express.Router();
    Config (from .env)
    ------------------------- */
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'models/gemini-2.0-flash'; // set to exact model name from models list
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'; // set to exact model name from models list
 const GEMINI_BASES = [
-  process.env.GEMINI_BASE || 'https://generativelanguage.googleapis.com/v1beta',
-  'https://generativelanguage.googleapis.com/v1beta2'
+  process.env.GEMINI_BASE || 'https://generativelanguage.googleapis.com/v1'
+  // 'https://generativelanguage.googleapis.com/v1beta2'
 ];
 
 /* -------------------------
@@ -485,15 +160,20 @@ async function callGeminiRest(messages) {
 
   const promptText = messagesToPrompt(messages);
   const payload = {
-    contents: [{ parts: [{ text: promptText }] }],
-    temperature: 0.2
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: promptText }]
+      }
+    ],
+    generationConfig: { temperature: 0.2 }
   };
 
   let lastError = null;
 
   for (const base of GEMINI_BASES) {
     // Keep model slashes intact — do NOT encode slashes in model path
-    const rawUrl = `${base}/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
+    const rawUrl = `${base}/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
     const url = encodeURI(rawUrl);
 
     console.info('[Gemini REST] Trying URL:', url);
@@ -649,15 +329,49 @@ router.post('/conversations/:id/title', auth, async (req, res) => {
   }
 });
 
+// router.delete('/conversations/:id', auth, async (req, res) => {
+//   try {
+//     const conv = await Conversation.findById(req.params.id);
+//     if (!conv || String(conv.user) !== String(req.userId)) return res.status(404).json({ message: 'Not found' });
+//     await conv.remove();
+//     return res.json({ success: true });
+//   } catch (err) {
+//     console.error('[AI] DELETE /conversations/:id error:', err);
+//     return res.status(500).json({ message: 'Failed to delete' });
+//   }
+// });
+
 router.delete('/conversations/:id', auth, async (req, res) => {
   try {
-    const conv = await Conversation.findById(req.params.id);
-    if (!conv || String(conv.user) !== String(req.userId)) return res.status(404).json({ message: 'Not found' });
-    await conv.remove();
-    return res.json({ success: true });
+    const userId = req.userId;
+    if (!userId) {
+      console.warn('[AI][DELETE] auth produced no userId for request', { headers: req.headers });
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ message: 'id required' });
+
+    const conv = await Conversation.findById(id);
+    if (!conv) {
+      console.warn('[AI][DELETE] conversation not found', { id, userId });
+      return res.status(404).json({ message: 'Conversation not found' });
+    }
+
+    if (String(conv.user) !== String(userId)) {
+      console.warn('[AI][DELETE] user mismatch, cannot delete', { id, convUser: conv.user, reqUser: userId });
+      return res.status(403).json({ message: 'Not authorized to delete this conversation' });
+    }
+
+    // delete (use deleteOne to be explicit)
+    await Conversation.deleteOne({ _id: id });
+    console.info('[AI][DELETE] conversation deleted', { id, userId });
+
+    // return deleted id so frontend can remove it cleanly
+    return res.json({ success: true, id });
   } catch (err) {
-    console.error('[AI] DELETE /conversations/:id error:', err);
-    return res.status(500).json({ message: 'Failed to delete' });
+    console.error('[AI] DELETE /conversations/:id error', err?.message || err);
+    return res.status(500).json({ message: 'Failed to delete conversation', error: String(err?.message || err) });
   }
 });
 

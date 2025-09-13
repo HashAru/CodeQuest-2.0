@@ -449,93 +449,8 @@ async function fetchCodeforces(handle) {
   }
 }
 
-/* ============ LeetCode fetcher (GraphQL) ============ */
-// async function fetchLeetCode(username, options = { recentLimit: 50 }) {
-//   try {
-//     const base = 'https://leetcode.com/graphql';
-//     const axiosCfg = { headers: { 'Content-Type': 'application/json', Referer: 'https://leetcode.com' }, timeout: 30000 };
 
-//     const profileQuery = `query getUserProfile($username: String!) {
-//       matchedUser(username: $username) {
-//         username
-//         submitStats {
-//           acSubmissionNum {
-//             difficulty
-//             count
-//             submissions
-//           }
-//         }
-//         profile {
-//           realName
-//           userAvatar
-//           ranking
-//         }
-//       }
-//     }`;
-//     const profR = await axios.post(base, { query: profileQuery, variables: { username } }, axiosCfg);
-//     const matched = profR.data?.data?.matchedUser;
-//     if (!matched) throw new Error('LeetCode user not found');
-
-//     const recentQuery = `query recentAcSubmissionList($username: String!, $limit: Int!) {
-//       recentAcSubmissionList(username: $username, limit: $limit) {
-//         title
-//         titleSlug
-//         timestamp
-//       }
-//     }`;
-//     const limit = options.recentLimit || 50;
-//     const recentR = await axios.post(base, { query: recentQuery, variables: { username, limit } }, axiosCfg);
-//     const recent = recentR.data?.data?.recentAcSubmissionList || [];
-
-//     // For topics: fetch question detail for each unique slug (limit to 30)
-//     const uniqueSlugs = [...new Set(recent.map(r => r.titleSlug).filter(Boolean))].slice(0, 30);
-//     const qQuery = `query questionData($titleSlug: String!) {
-//       question(titleSlug: $titleSlug) {
-//         topicTags { name }
-//         difficulty
-//       }
-//     }`;
-
-//     const topicCounts = {};
-//     for (const slug of uniqueSlugs) {
-//       try {
-//         const qR = await axios.post(base, { query: qQuery, variables: { titleSlug: slug } }, axiosCfg);
-//         const q = qR.data?.data?.question;
-//         if (q && Array.isArray(q.topicTags)) {
-//           for (const t of q.topicTags) topicCounts[t.name] = (topicCounts[t.name] || 0) + 1;
-//         }
-//       } catch (e) {
-//         // ignore per-question errors
-//       }
-//     }
-
-//     const daySet = new Set();
-//     for (const r of recent) {
-//       const d = new Date(Number(r.timestamp) * 1000);
-//       daySet.add(d.toISOString().slice(0, 10));
-//     }
-
-//     const solvedCount = matched.submitStats?.acSubmissionNum?.reduce((a, c) => a + (c.count || 0), 0) || 0;
-  
-//     const res = {
-//       handle: username,
-//       displayName: matched.username,
-//       ranking: matched.profile?.ranking ?? null,
-//       solvedCount,
-//       recentSolved: recent.map(r => ({ title: r.title, slug: r.titleSlug, ts: r.timestamp })),
-//       daysActive: daySet.size,
-//       topics: topicCounts,
-//       timeSeries: buildTimeSeriesFromRecent(recent.map(r => ({ ts: r.timestamp }))),
-//       fetchedAt: new Date().toISOString()
-//     };
-//     return res;
-//   } catch (err) {
-//     console.error('fetchLeetCode error', err?.response?.data || err.message);
-//     throw new Error('Failed to fetch LeetCode profile');
-//   }
-// }
-
-// replacement fetchLeetCode function (paste into your routes/profiles.js)
+// replacement fetchLeetCode function (GRAPHQL)
 async function fetchLeetCode(username, options = { recentLimit: 50 }) {
   try {
     const base = 'https://leetcode.com/graphql';
@@ -858,12 +773,28 @@ router.post('/:id/refresh', auth, async (req, res) => {
 });
 
 // delete
+// router.delete('/:id', auth, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const profile = await Profile.findById(id);
+//     if (!profile || String(profile.user) !== String(req.userId)) return res.status(404).json({ message: 'Profile not found' });
+//     await profile.remove();
+//     return res.json({ success: true });
+//   } catch (err) {
+//     console.error('/api/profiles DELETE error', err);
+//     return res.status(500).json({ message: 'Failed to delete profile' });
+//   }
+// });
+
 router.delete('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
     const profile = await Profile.findById(id);
-    if (!profile || String(profile.user) !== String(req.userId)) return res.status(404).json({ message: 'Profile not found' });
-    await profile.remove();
+    if (!profile || String(profile.user) !== String(req.userId)) {
+      return res.status(404).json({ message: 'Profile not found' });
+    }
+
+    await profile.deleteOne(); // ✅ fixed: use deleteOne instead of remove
     return res.json({ success: true });
   } catch (err) {
     console.error('/api/profiles DELETE error', err);
